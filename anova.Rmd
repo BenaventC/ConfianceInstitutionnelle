@@ -1,0 +1,346 @@
+---
+title: "Confiance institutionnelle - France 2006-2016"
+author: "CB"
+date: "25 octobre 2019"
+output: html_document
+---
+<style type="text/css">
+body, td {
+   font-size: 14px;
+}
+code.r{
+  font-size: 10px;
+}
+h1{
+  font-size: 24px;
+}
+h2{
+  font-size: 18px;
+}
+h3{
+  font-size: 14px;
+}
+pre {
+  font-size: 11px
+}
+</style>
+![confiance](confianceinstitution.jpg)
+
+
+
+
+Cette étude est destinée à des cours de méthodes quantitatives pour la recherche en gestion en M2 et Séminaire doctoral. L'objectif pédagogique est d'entrainer les étudiants à l'analyse comparative et longitudinale. Manier les représentations graphiques (avec ggplot2), exploiter des Anovas pour tester les comparaisons entre groupes sociaux à travers le temps, construire des modèles de régressions pour établir les éffets des variables et leurs interactions éventuelles, les représenter habilement pour en extraire les enseignements. 
+
+L'objectif est d'analyser l'évolution de la confiance dans les institutions (parlement, justice, police, UE, ONU,politiques, partis) de 2006 à 2016 en France et d'examiner ses relations avec quelques variables clés : l'aisance matérielle, l'environnement de vie et l'orientation politique, ainsi que l'âge , mais pour cette dernière variable on laisse le soin aux étudiants de l'ajouter à l'étude.
+
+la source de données est l'[European Social Survey](https://www.europeansocialsurvey.org/data/) dont attend impatiemment la livraison 2018. C'est un panel bi annuel, sans répétition de mesure.Deux milles personnes sont interrogée à chaque vague. 
+
+
+# Chargement des packages
+
+Dans l'ordre de leur utilisation
+
+```{r setup, include=TRUE,echo=TRUE, warning = FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = TRUE,  warning = FALSE, error=FALSE)
+library(haven)
+library(tidyverse)
+library(fishualize) #palette de couleur
+library(knitr) # pour les jolis tableaux ci dessous mais c'est ce qui tricote ce carnet de recherche
+library(kableExtra) # pour de jolis tableaux
+library(sjstats) #calcul de taille des effets et puissance de test
+library(gridExtra)
+library(MASS)
+library(mixtools)
+library(AMR)
+library(lme4)
+library(jtools)
+
+```
+
+# Préparation des données
+
+On commence par charger le fichier en sélectionnant les données pour la France sur les périodes 2006-2016 donc 6 points de comparaison. On filtre les répondants qui ont répondu à toutes les questions sélectionnées. On passe de 15600 répondants à environ 11 000.
+
+```{r file}
+df <- read_sav("ESS1-8e01.sav")
+df<-subset(df, cntry=="FR" & essround>2)
+df<-subset(df,select=c("trstun","trstep", "trstlgl","trstplc", "trstplt","trstprl","trstprt","essround", "lrscale","hincfel", "domicil", "cproddat" ))
+df<-unique(df) # pour eliminer toutes les valeurs manquantes
+```
+
+# La confiance dans les institutions
+
+on va s'intéresser à la confiance et construire un indicateur qui est la somme des items réétalonnée de 1 à 100. On examinera dans une autre étude la structure de cette confiance. On trouvera des premiers éléments dans une étude précédentes.
+
+```{r Trust1}
+#on renomme pour plus de clarte
+names(df)[names(df)=="trstun"] <- "NationsUnies" 
+names(df)[names(df)=="trstep"] <- "ParlementEurop" 
+names(df)[names(df)=="trstlgl"] <- "Justice" 
+names(df)[names(df)=="trstplc"] <- "Police" 
+names(df)[names(df)=="trstplt"] <- "Politiques" 
+names(df)[names(df)=="trstprl"] <-"Parlement" 
+names(df)[names(df)=="trstprt"] <- "Partis"
+
+#on construit le score
+df<-df %>% mutate(trust_institution =1+(Partis+Parlement+Politiques+Police+Justice+NationsUnies+ParlementEurop)*10/7)
+```
+
+on examine la distribution et sa normalité et on teste une autre fonction de distribution.
+
+```{r Trust2}
+moy=mean(df$trust_institution, na.rm=TRUE)
+sd=sd(df$trust_institution, na.rm=TRUE)
+g01<-ggplot(df,aes(x=trust_institution))+ geom_density(fill="orange2")+stat_function(fun = dnorm,color="darkgreen",size=1.2, args = list(mean =moy, sd=sd))+theme_minimal() 
+g02 <- ggplot(df, aes(sample = trust_institution)) + stat_qq() + stat_qq_line()
+grid.arrange(g01,g02,ncol=2)
+
+df<-df %>% na.omit() 
+fit<-fitdistr(df$trust_institution,"logistic") 
+g01b<- g01+stat_function(fun = dlogis ,color="red",size=1.2, args = list( location=31.87779105,  scale=6.97141774))
+g01b
+```
+
+Pour aller plus loin on teste un mélange de deux distributions normales. L'ajustement semble meilleure, un quart de l'échantillon à une confiance bien plus forte que la majorité, ce qui explique le décalage à droite de la distribution primaire.Y-at-il segmentation de la population? 
+
+```{r Trust3}
+
+mixD <- normalmixEM(df$trust_institution,k=2,maxit=2000,epsilon=0.0001) # a réitirer ca marche pas toujours!
+summary(mixD)
+#mais on ne respecte pas les proportions
+#une fonction pour représenter les deux distributions 
+# ggplot mixture plot
+gg.mixEM <- function(EM) {
+  require(ggplot2)
+  x       <- with(EM,seq(min(x),max(x),len=1000))
+  pars    <- with(EM,data.frame(comp=colnames(posterior), mu, sigma,lambda))
+  em.df   <- data.frame(x=rep(x,each=nrow(pars)),pars)
+  em.df$y <- with(em.df,lambda*dnorm(x,mean=mu,sd=sigma))
+  ggplot(data.frame(x=EM$x),aes(x,y=..density..)) + 
+    geom_density(fill=NA,color="black")+
+    geom_polygon(data=em.df,aes(x,y,fill=comp),color="grey50", alpha=0.5)+
+    scale_fill_discrete("Component\nMeans",labels=format(em.df$mu,digits=3))+
+    theme_bw()
+}
+gg.mixEM(mixD)
+#la même mais en les superposant
+gg.mixEMb <- function(EM) {
+  require(ggplot2)
+  x       <- with(EM,seq(min(x),max(x),len=1000))
+  pars    <- with(EM,data.frame(comp=colnames(posterior), mu, sigma,lambda))
+  em.df   <- data.frame(x=rep(x,each=nrow(pars)),pars)
+  em.df$y <- with(em.df,lambda*dnorm(x,mean=mu,sd=sigma))
+  ggplot(data.frame(x=EM$x),aes(x,y=..density..)) + 
+    geom_density(fill=NA,color="black")+
+    geom_bar(data=em.df,aes(x,y,fill=comp), alpha=0.5, stat="identity")+
+    scale_fill_discrete("Component\nMeans",labels=format(em.df$mu,digits=3))+
+    theme_bw()
+}
+gg.mixEMb(mixD)
+
+```
+
+# Des variables explicatives
+
+on recode les variable explicatives
+
+```{r recodage}
+
+df$Year[df$essround==3]<-2006 
+df$Year[df$essround==4]<-2008 
+df$Year[df$essround==5]<-2010 
+df$Year[df$essround==6]<-2012 
+df$Year[df$essround==7]<-2014 
+df$Year[df$essround==8]<-2016 
+df$Year<-as.factor(df$Year) 
+
+#ggplot(df,aes(x=lrscale))+geom_histogram()
+df$OP[df$lrscale==0] <- "Extrême gauche" 
+df$OP[df$lrscale==1] <- "Gauche" 
+df$OP[df$lrscale==2] <- "Gauche" 
+df$OP[df$lrscale==3] <- "Centre Gauche" 
+df$OP[df$lrscale==4] <- "Centre Gauche" 
+df$OP[df$lrscale==5] <- "Ni G ni D" 
+df$OP[df$lrscale==6] <- "Centre Droit" 
+df$OP[df$lrscale==7] <- "Centre Droit" 
+df$OP[df$lrscale==8] <- "Droite" 
+df$OP[df$lrscale==9] <- "Droite" 
+df$OP[df$lrscale==10] <- "Extrême droite" 
+df$OP<-factor(df$OP,levels=c("Extrême droite","Droite","Centre Droit","Ni G ni D","Centre Gauche","Gauche","Extrême gauche"))
+
+df%>% freq(OP)
+
+
+df$rev<-df$hincfel
+df$rev[df$hincfel>4] <- NA
+
+
+df$revenu[df$hincfel>4] <- NA
+df$revenu[df$hincfel==1] <- "Vie confortable" 
+df$revenu[df$hincfel==2] <- "Se débrouille avec son revenu" 
+df$revenu[df$hincfel==3] <- "Revenu insuffisant" 
+df$revenu[df$hincfel==4] <- "Revenu très insuffisant" 
+
+df$revenu<-factor(df$revenu,levels=c("Vie confortable","Se débrouille avec son revenu","Revenu insuffisant","Revenu très insuffisant"))
+df%>% freq(revenu)
+
+df$habitat[df$domicil==1]<- "A big city"
+df$habitat[df$domicil==2]<-"Suburbs of big city"
+df$habitat[df$domicil==3]<-"Town or small city"
+df$habitat[df$domicil==4]<-"Country village"
+df$habitat[df$domicil==5]<-"Farm or home in countryside"
+df$habitat<-factor(df$habitat,levels=c("A big city","Suburbs of big city","Town or small city","Country village","Farm or home in countryside"))
+df %>% freq(habitat)
+
+```
+
+
+# Analyse des données
+
+On examine d'abord graphiquement l'évolution de la confiance institutionnelle en fonction de nos trois variables : revenu, habitat et convictions politiques. On contrôle ensuite les interprétation en considérant l'évolution des populations étudiées. On teste ensuite par des analyses de variance en retenant des critère de f de cohen et de puissance de test pour compléter les indicateurs habituels pour profiter de la taille substantielle de notre set de données. 
+
+## L'effet du pouvoir d'achat perçu
+
+```{r graph6}
+
+dg<-df %>% group_by(revenu,Year) %>% summarise(trust_institution=mean(trust_institution,na.rm=TRUE))%>% na.omit() 
+
+
+g1<-ggplot(dg,aes(x=Year,y=trust_institution,group=revenu))+geom_line(aes(color=revenu), size=2)+scale_color_fish(option = "Hypsypops_rubicundus", discrete = TRUE)+theme_minimal()+ylim(30,60)
+g1
+```
+
+On notera une relative stabilité de la répartition des catégories de pouvoir d'achat. L'évolution est légèrement favorable pour les vies confortables. La part des revenu insuffisant et très insuffisant passe de 16% à presque 19%. ce qui se débrouillent sont moins nombreux, ils ont sans doute glissé du côté des plus nécessiteux.
+
+```{r bonheur03, echo=TRUE} 
+TabEv <- with(df, table(revenu,Year)) %>% prop.table(margin = 2) #création de la page en tidy
+TabEv %>% kable(digit=2,format = "html", caption = "Evolution de la répartition des niveaux de vie") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =T,font_size = 10) # édition de la table avec kable
+```
+
+
+```{r model2c}
+AnovaModel.2<- lm(trust_institution ~ revenu+Year+Year*revenu, data=df) 
+sstable <-anova_stats(AnovaModel.2)
+#sstable <- Anova(AnovaModel.2, type = 3) 
+kable(sstable,digit=3,format = "html", caption = "Analyse de variance - full interaction") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =FALSE,font_size = 10)%>%
+  group_rows("Effets principaux", 1, 2) %>%
+  group_rows("Interactions ordre 2", 3,3)
+
+
+```
+## Effet de l'habitat
+
+
+```{r graph7}
+
+dg<-df %>% group_by(habitat,Year) %>% summarise(trust_institution=mean(trust_institution,na.rm=TRUE))%>% na.omit() 
+
+ggplot(dg,aes(x=Year,y=trust_institution,group=habitat))+geom_line(aes(color=habitat), size=2)+scale_color_fish(option = "Hypsypops_rubicundus", discrete = TRUE)+theme_minimal()+ylim(30,60)
+
+```
+
+stabilité
+
+```{r bonheur01, echo=TRUE} 
+TabEv <- with(df, table(habitat,Year)) %>% prop.table(margin = 2) #création de la page en tidy
+
+TabEv %>% kable(digit=2,format = "html", caption = "Evolution de la répartition des habitats") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =T,font_size = 10) # édition de la table avec kable
+```
+
+
+```{r model3a, echo = TRUE,include=TRUE,warning=FALSE}
+AnovaModel.2<- lm(trust_institution ~ habitat+Year+Year*habitat, data=df) 
+sstable <-anova_stats(AnovaModel.2)
+#sstable <- Anova(AnovaModel.2, type = 3) 
+kable(sstable,digit=3,format = "html", caption = "Analyse de variance - full interaction") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =FALSE,font_size = 10)%>%
+  group_rows("Effets principaux", 1, 2) %>%
+  group_rows("Interactions ordre 2", 3,4)
+```
+## Effet de l'orientation politique
+
+
+```{r graph8}
+
+dg<-df %>% group_by(OP,Year) %>% summarise(trust_institution=mean(trust_institution,na.rm=TRUE))%>% na.omit() 
+
+
+ggplot(dg,aes(x=Year,y=trust_institution,group=OP))+geom_line(aes(color=OP), size=2)+scale_color_fish(option = "Hypsypops_rubicundus", discrete = TRUE)+theme_minimal()+ylim(30,60)
+
+```
+
+Il semble qu'il y aie une nette droitisation de l'opinion.
+
+```{r bonheur02, echo=TRUE} 
+TabEv <- with(df, table(OP,Year)) %>% prop.table(margin = 2) #création de la page en tidy
+
+TabEv %>% kable(digit=2,format = "html", caption = "Evolution de la répartition des orientations politiques") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =T,font_size = 10) # édition de la table avec kable
+```
+
+
+```{r model2b, echo = TRUE,include=TRUE,warning=FALSE}
+AnovaModel.2<- lm(trust_institution ~ OP+Year+Year*OP, data=df) 
+sstable <-anova_stats(AnovaModel.2)
+#sstable <- Anova(AnovaModel.2, type = 3) 
+kable(sstable,digit=3,format = "html", caption = "Analyse de variance - Orientation Politique") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =FALSE,font_size = 10)%>%
+  group_rows("Effets principaux", 1, 2) %>%
+  group_rows("Interactions ordre 2", 3,4)
+
+```
+# Des modèles plus sophistiqués
+
+Il s'agit maintenant de prendre en compte l'ensemble des facteurs .
+
+
+
+## Un simple modèle linéaire
+
+On commence par un modèle linaire, une ANOVA multiple en fait dont les résultats principaux sont donnés dans le tableau suivant. Le revenu excerce un effet relativement fort, suivi par l'idéologie. l'effet de l'environnement de vie et de la tendance sont moins convaincant même si significatifs.
+
+```{r model3b, echo = TRUE,include=TRUE,warning=FALSE}
+reg<- lm(trust_institution ~ rev+OP+habitat+Year, data=df)
+sstable <-anova_stats(reg)
+#sstable <- Anova(AnovaModel.2, type = 3) 
+kable(sstable,digit=3,format = "html", caption = "Analyse de variance - full interaction") %>% kable_styling(bootstrap_options = c("striped", "hover"),full_width =FALSE,font_size = 10)%>%
+  group_rows("Effets principaux", 1, 4)
+```
+
+Une évaluation de l'importance des paramètres et des effets avec jtools.
+
+```{r model3bb, echo = TRUE,include=TRUE,warning=FALSE}
+
+plot_summs(reg,scale = FALSE)
+```
+
+## D'autres variantes
+
+Et deux modèles linéaires mixtes dont l'élément aléatoire est l'année. Le second comprenant un terme d'interaction
+
+```{r model4, echo = TRUE,include=TRUE,warning=FALSE}
+
+reg1<- lmer(trust_institution ~ rev+OP+habitat +(1 | Year), data=df) 
+reg2<- lmer(trust_institution ~ rev+OP*habitat+( 1| Year), data=df) 
+
+plot_summs(reg1, reg2, scale = FALSE)
+
+
+```
+
+## Le détail des résultats
+
+```{r model5, echo = TRUE,include=TRUE,warning=FALSE}
+library(stargazer)
+stargazer(reg, reg1, reg2, type="text")
+```
+
+# En guise de conclusion
+
+Une hypothèse de travail qu'il faut tester : le caractère unidimensionnel de la confiance institutionnelle. On verra dans une autre étude que ce n'est pas tout à fait le cas.
+
+Des faits solides qu'on peut retenir
+ * l'effet puissant des conditions de vie
+ * le virage désinstitutionnel de la droite
+ * le glissement à droite
+ 
+ ce qui appele des analyses compléméentaire
+ - la relation revenu politique habitat ( AFM)
+ 
